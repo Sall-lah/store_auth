@@ -1,0 +1,570 @@
+openapi: 3.1.0
+info:
+  title: Store Auth Microservice API
+  version: 1.0.0
+  description: |
+    Authentication, authorization, and cryptographic identity microservice for the store platform.
+    
+    ### Architecture & Authentication Modes
+    - **RS256 Asymmetric JWT**: Tokens are signed with an RSA private key. Downstream microservices can independently verify tokens in-memory using the public key set from `GET /.well-known/jwks.json`.
+    - **Cookie & Bearer Support**: Web clients receive `HttpOnly` secure cookies (`access_token`, `refresh_token`), while mobile and service clients can pass `Authorization: Bearer <access_token>`.
+    - **API Gateway Integration**: In production, requests route through a central API Gateway (e.g. NGINX / Heroku Gateway) which handles perimeter security, rate limiting, and forwards identity headers (`X-User-Id`, `X-User-Role`, `X-User-Email`) downstream.
+
+servers:
+  - url: http://localhost:8080
+    description: Local Standalone Development Server (store_auth direct)
+  - url: https://store-gateway.herokuapp.com
+    description: Production API Gateway (Heroku NGINX Gateway)
+  - url: https://api.store.example.com
+    description: Custom Domain API Gateway
+
+tags:
+  - name: Authentication
+    description: Registration, OTP verification, login, refresh, and session management
+  - name: Password Reset
+    description: Self-service password recovery workflows via email OTP
+  - name: Identity & Profile
+    description: Authenticated user identity inspection
+  - name: JWKS Discovery
+    description: Public cryptographic keys for downstream microservice token verification
+
+paths:
+  /.well-known/jwks.json:
+    get:
+      tags:
+        - JWKS Discovery
+      summary: Get JSON Web Key Set (JWKS)
+      description: |
+        Returns the public RSA keys (RFC 7517) used by `store_auth` to sign RS256 JWTs.
+        Downstream microservices should fetch this set once on boot, cache it in-memory, and use it to verify incoming JWT signatures with zero network latency.
+      operationId: getJWKS
+      responses:
+        "200":
+          description: Public key set successfully retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JWKS"
+              example:
+                keys:
+                  - kty: RSA
+                    use: sig
+                    alg: RS256
+                    kid: store-auth-key-1
+                    n: "u1R5Z..."
+                    e: AQAB
+
+  /api/auth/register:
+    post:
+      tags:
+        - Authentication
+      summary: Register a new user account
+      description: Creates a new user record in an inactive status and dispatches a 6-digit verification OTP code to the provided email.
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Registration successful, OTP dispatched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: Registration successful. Please verify your OTP to activate your account.
+        "400":
+          description: Validation error in request payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: Validation failed
+                details:
+                  email: Invalid email format
+                  password: Password must be at least 8 characters long
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: email is already registered
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/auth/verify-otp:
+    post:
+      tags:
+        - Authentication
+      summary: Verify OTP and activate account
+      description: Confirms user email ownership using the 6-digit OTP code sent during registration, activating the account.
+      operationId: verifyOTP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyOTPRequest"
+      responses:
+        "200":
+          description: Account successfully activated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: Account verified successfully. You can now log in.
+        "400":
+          description: Invalid OTP code or validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: OTP code expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+                example:
+                  error: OTP code has expired
+        "429":
+          description: Maximum OTP verification attempts exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: Log in with credentials
+      description: |
+        Authenticates user email and password. On success, issues an RS256 access token (15m expiry) and refresh token (7d expiry) via `HttpOnly` secure cookies:
+        - `access_token` (Path: `/`, 15 min)
+        - `refresh_token` (Path: `/api/auth/refresh`, 7 days)
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Authentication successful
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: HttpOnly auth cookies (access_token, refresh_token)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400":
+          description: Invalid JSON or validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+                example:
+                  error: Invalid email or password
+        "403":
+          description: Account inactive (pending OTP verification)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+                example:
+                  error: Account is not active. Please complete OTP verification.
+
+  /api/auth/refresh:
+    post:
+      tags:
+        - Authentication
+      summary: Refresh access token
+      description: |
+        Rotates the refresh token and issues a new RS256 access token using the `refresh_token` cookie.
+        Detects token reuse attacks and invalidates compromised token families automatically.
+      operationId: refresh
+      security:
+        - cookieRefreshAuth: []
+      responses:
+        "200":
+          description: Tokens refreshed and rotated successfully
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: Updated HttpOnly auth cookies
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "401":
+          description: Missing, invalid, expired, or reused refresh token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Account inactive or revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/auth/logout:
+    post:
+      tags:
+        - Authentication
+      summary: Log out current user
+      description: Revokes the active refresh token in the database and clears all auth session cookies from the client.
+      operationId: logout
+      responses:
+        "200":
+          description: Logged out successfully and cookies cleared
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+              description: Cleared auth cookies with Max-Age=-1
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: Logout successful
+
+  /api/auth/forgot-password:
+    post:
+      tags:
+        - Password Reset
+      summary: Initiate password reset
+      description: Generates a 6-digit password reset OTP and emails it to the user. Always returns a generic success message to prevent user enumeration.
+      operationId: forgotPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgotPasswordRequest"
+      responses:
+        "200":
+          description: Password reset request acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: If an account exists for this email, a password reset code has been sent.
+        "400":
+          description: Invalid email format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/auth/reset-password:
+    post:
+      tags:
+        - Password Reset
+      summary: Reset password with OTP
+      description: Validates the password reset OTP and updates the user's password hash with bcrypt.
+      operationId: resetPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetPasswordRequest"
+      responses:
+        "200":
+          description: Password successfully updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: Password reset successfully. You can now log in with your new password.
+        "400":
+          description: Invalid OTP code or password policy violation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: OTP code expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Maximum attempts exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/auth/me:
+    get:
+      tags:
+        - Identity & Profile
+      summary: Get current authenticated user profile
+      description: Returns the user profile for the currently authenticated session using the access token claims.
+      operationId: getMe
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: User profile retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "401":
+          description: Unauthorized - missing, expired, or blacklisted token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+                example:
+                  error: Authentication cookie missing or empty
+        "404":
+          description: User record not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: access_token
+      description: RS256 JWT access token stored in HttpOnly cookie.
+    cookieRefreshAuth:
+      type: apiKey
+      in: cookie
+      name: refresh_token
+      description: Stateful refresh token stored in HttpOnly cookie scoped to `/api/auth/refresh`.
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "RS256 JWT access token passed in 'Authorization: Bearer <token>' header."
+
+  schemas:
+    Role:
+      type: string
+      enum:
+        - CUSTOMER
+        - ADMIN
+      description: User authorization role
+      example: CUSTOMER
+
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - password
+        - name
+      properties:
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        password:
+          type: string
+          format: password
+          minLength: 8
+          example: SecureP@ssw0rd!
+        name:
+          type: string
+          example: John Doe
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        password:
+          type: string
+          format: password
+          example: SecureP@ssw0rd!
+
+    VerifyOTPRequest:
+      type: object
+      required:
+        - email
+        - code
+      properties:
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        code:
+          type: string
+          minLength: 6
+          maxLength: 6
+          example: "123456"
+        type:
+          type: string
+          enum:
+            - REGISTRATION
+            - PASSWORD_RESET
+          default: REGISTRATION
+          example: REGISTRATION
+
+    ForgotPasswordRequest:
+      type: object
+      required:
+        - email
+      properties:
+        email:
+          type: string
+          format: email
+          example: user@example.com
+
+    ResetPasswordRequest:
+      type: object
+      required:
+        - email
+        - code
+        - new_password
+      properties:
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        code:
+          type: string
+          minLength: 6
+          maxLength: 6
+          example: "123456"
+        new_password:
+          type: string
+          format: password
+          minLength: 8
+          example: NewSecureP@ssw0rd!
+
+    UserResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        name:
+          type: string
+          example: John Doe
+        role:
+          $ref: "#/components/schemas/Role"
+        is_active:
+          type: boolean
+          example: true
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-08-15T00:00:00Z"
+
+    LoginResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: Login successful
+        user:
+          $ref: "#/components/schemas/UserResponse"
+
+    MessageResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: Operation completed successfully
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          example: Validation failed
+        details:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            email: Invalid email format
+
+    JWK:
+      type: object
+      required:
+        - kty
+        - use
+        - alg
+        - kid
+        - n
+        - e
+      properties:
+        kty:
+          type: string
+          example: RSA
+        use:
+          type: string
+          example: sig
+        alg:
+          type: string
+          example: RS256
+        kid:
+          type: string
+          example: store-auth-primary-key
+        n:
+          type: string
+          description: Base64URL-encoded modulus of the RSA public key
+          example: "u1R5Zn..."
+        e:
+          type: string
+          description: Base64URL-encoded exponent of the RSA public key
+          example: AQAB
+
+    JWKS:
+      type: object
+      required:
+        - keys
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: "#/components/schemas/JWK"

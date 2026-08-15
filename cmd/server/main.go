@@ -47,17 +47,18 @@ func main() {
 
 	// Initialize repositories per feature
 	userRepo := auth.NewRepository(prismaClient)
+	refreshRepo := auth.NewRefreshRepository(prismaClient)
 	otpRepo := otp.NewRepository(prismaClient)
 
 	// Initialize services per feature
-	jwtSvc, err := jwt.NewService(cfg.JWTPrivateKeyPath, cfg.JWTPublicKeyPath, cfg.JWTExpiryHours)
+	jwtSvc, err := jwt.NewService(cfg.JWTPrivateKeyPath, cfg.JWTPublicKeyPath, cfg.JWTAccessExpiryMinutes)
 	if err != nil {
 		log.Fatalf("[FATAL] Failed to initialize JWT service: %v", err)
 	}
 
 	otpSender := otp.NewOTPSender(cfg.OTPProvider, cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
 	otpSvc := otp.NewService(otpRepo, otpSender, cfg.OTPExpiryMinutes, cfg.OTPMaxAttempts)
-	authSvc := auth.NewService(userRepo, otpSvc, jwtSvc, cfg.BcryptCost)
+	authSvc := auth.NewService(userRepo, refreshRepo, otpSvc, jwtSvc, rdb, cfg.BcryptCost, cfg.JWTRefreshExpiryDays)
 
 	// Initialize handlers per feature
 	isProd := cfg.Env == "production"
@@ -66,7 +67,7 @@ func main() {
 	rateLimiter := middleware.NewRateLimiter(rdb, cfg.RateLimitMaxRequests, cfg.RateLimitWindowSec)
 
 	// Wire router
-	r := router.SetupRouter(authHandler, jwksHandler, rateLimiter, jwtSvc)
+	r := router.SetupRouter(authHandler, jwksHandler, rateLimiter, jwtSvc, rdb)
 
 	addr := fmt.Sprintf(":%s", cfg.ServerPort)
 	srv := &http.Server{

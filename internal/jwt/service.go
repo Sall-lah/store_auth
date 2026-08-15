@@ -22,8 +22,9 @@ type Service struct {
 	keyID      string
 }
 
-// NewService initializes RSA keys from PEM files or returns an error if key loading fails.
-func NewService(privateKeyPath, publicKeyPath string, expiryHours int) (*Service, error) {
+// NewService initializes RSA keys from PEM files and configures token expiration.
+// Why: Sets up cryptographic signing and verification infrastructure with explicit token lifetime boundaries.
+func NewService(privateKeyPath, publicKeyPath string, expiryMinutes int) (*Service, error) {
 	privKey, err := loadPrivateKey(privateKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load private key: %w", err)
@@ -37,7 +38,7 @@ func NewService(privateKeyPath, publicKeyPath string, expiryHours int) (*Service
 	return &Service{
 		privateKey: privKey,
 		publicKey:  pubKey,
-		expiry:     time.Duration(expiryHours) * time.Hour,
+		expiry:     time.Duration(expiryMinutes) * time.Minute,
 		keyID:      "store-auth-key-1",
 	}, nil
 }

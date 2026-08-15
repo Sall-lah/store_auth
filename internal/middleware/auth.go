@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/redis/go-redis/v9"
 	"store_auth/internal/jwt"
+	platformRedis "store_auth/internal/platform/redis"
 )
 
 type contextKey string
@@ -19,8 +21,10 @@ type errorResponse struct {
 	Details map[string]string `json:"details,omitempty"`
 }
 
-// Authenticate returns middleware that extracts and validates the RS256 JWT access token from the access_token HttpOnly cookie.
-func Authenticate(jwtService *jwt.Service) func(http.Handler) http.Handler {
+// Authenticate returns middleware that extracts and validates the RS256 JWT access token from the access_token HttpOnly cookie,
+// and ensures the user account is not revoked in the Redis blacklist.
+// Why: Enforces token validity statelessly while verifying real-time user revocation status without querying PostgreSQL.
+func Authenticate(jwtService *jwt.Service, rdb *redis.Client) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cookie, err := r.Cookie("access_token")
@@ -32,6 +36,11 @@ func Authenticate(jwtService *jwt.Service) func(http.Handler) http.Handler {
 			claims, err := jwtService.ValidateToken(cookie.Value)
 			if err != nil {
 				respondWithError(w, http.StatusUnauthorized, "Invalid or expired authentication token")
+				return
+			}
+
+			if platformRedis.IsUserBlacklisted(r.Context(), rdb, claims.Subject) {
+				respondWithError(w, http.StatusUnauthorized, "Account has been revoked")
 				return
 			}
 

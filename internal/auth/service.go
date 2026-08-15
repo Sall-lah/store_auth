@@ -2,39 +2,68 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 	"store_auth/internal/jwt"
 	"store_auth/internal/otp"
+	platformRedis "store_auth/internal/platform/redis"
 )
 
 var (
-	ErrInvalidCredentials = errors.New("invalid email or password")
-	ErrAccountInactive    = errors.New("user account is inactive, please verify registration OTP")
-	ErrEmailTaken         = errors.New("email address is already registered")
+	ErrInvalidCredentials  = errors.New("invalid email or password")
+	ErrAccountInactive     = errors.New("user account is inactive, please verify registration OTP")
+	ErrEmailTaken          = errors.New("email address is already registered")
+	ErrInvalidRefreshToken = errors.New("invalid refresh token")
+	ErrRefreshTokenExpired = errors.New("refresh token has expired")
+	ErrRefreshTokenReused  = errors.New("refresh token reuse detected")
 )
 
 // Service encapsulates authentication logic, credential processing, and feature integration.
 type Service struct {
-	userRepo   *Repository
-	otpService *otp.Service
-	jwtService *jwt.Service
-	bcryptCost int
+	userRepo          *Repository
+	refreshRepo       *RefreshRepository
+	otpService        *otp.Service
+	jwtService        *jwt.Service
+	rdb               *redis.Client
+	bcryptCost        int
+	refreshExpiryDays int
 }
 
-// NewService constructs a Service binding user repository, JWT signer, and OTP manager.
-func NewService(userRepo *Repository, otpService *otp.Service, jwtService *jwt.Service, bcryptCost int) *Service {
+// NewService constructs a Service binding user repository, refresh repository, Redis client, JWT signer, and OTP manager.
+// Why: Injects all data access, cryptographic, and caching dependencies required for user authentication workflows.
+func NewService(
+	userRepo *Repository,
+	refreshRepo *RefreshRepository,
+	otpService *otp.Service,
+	jwtService *jwt.Service,
+	rdb *redis.Client,
+	bcryptCost int,
+	refreshExpiryDays int,
+) *Service {
+	if refreshExpiryDays <= 0 {
+		refreshExpiryDays = 7
+	}
 	return &Service{
-		userRepo:   userRepo,
-		otpService: otpService,
-		jwtService: jwtService,
-		bcryptCost: bcryptCost,
+		userRepo:          userRepo,
+		refreshRepo:       refreshRepo,
+		otpService:        otpService,
+		jwtService:        jwtService,
+		rdb:               rdb,
+		bcryptCost:        bcryptCost,
+		refreshExpiryDays: refreshExpiryDays,
 	}
 }
 
 // Register creates an inactive user account, generates a registration verification OTP, and triggers transmission.
+// Why: Initializes user identity in pending state until email ownership is proven.
 func (s *Service) Register(ctx context.Context, req RegisterRequest) error {
 	existing, err := s.userRepo.FindUserByEmail(ctx, req.Email)
 	if err == nil && existing != nil {
@@ -67,6 +96,7 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) error {
 }
 
 // VerifyRegistrationOTP verifies the user's registration activation code and activates their account status upon success.
+// Why: Prevents unauthorized login until the owner validates the delivered one-time passcode.
 func (s *Service) VerifyRegistrationOTP(ctx context.Context, req otp.VerifyOTPRequest) error {
 	user, err := s.userRepo.FindUserByEmail(ctx, req.Email)
 	if err != nil {
@@ -84,34 +114,135 @@ func (s *Service) VerifyRegistrationOTP(ctx context.Context, req otp.VerifyOTPRe
 	return nil
 }
 
-// Login validates user credentials, checks activation state, and generates an RS256 signed JWT token upon success.
-func (s *Service) Login(ctx context.Context, req LoginRequest) (*User, string, error) {
+// Login validates user credentials, checks account activation, and issues both access and refresh tokens.
+// Why: Provides authenticated sessions with short-lived access credentials and rotatable refresh credentials.
+func (s *Service) Login(ctx context.Context, req LoginRequest) (*User, string, string, error) {
 	user, err := s.userRepo.FindUserByEmail(ctx, req.Email)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
-			return nil, "", ErrInvalidCredentials
+			return nil, "", "", ErrInvalidCredentials
 		}
-		return nil, "", err
+		return nil, "", "", err
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
-		return nil, "", ErrInvalidCredentials
+		return nil, "", "", ErrInvalidCredentials
 	}
 
 	if !user.IsActive {
-		return nil, "", ErrAccountInactive
+		return nil, "", "", ErrAccountInactive
 	}
 
-	token, err := s.jwtService.GenerateToken(user.ID, user.Email, string(user.Role))
+	accessToken, err := s.jwtService.GenerateToken(user.ID, user.Email, string(user.Role))
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to issue jwt token: %w", err)
+		return nil, "", "", fmt.Errorf("failed to issue jwt access token: %w", err)
 	}
 
-	return user, token, nil
+	refreshToken, err := s.issueRefreshToken(ctx, user.ID)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to issue refresh token: %w", err)
+	}
+
+	return user, accessToken, refreshToken, nil
+}
+
+// RefreshToken validates an incoming opaque refresh token, verifies user status, and rotates tokens.
+// Why: Enables seamless session renewal without re-entering credentials while detecting compromised token replay.
+func (s *Service) RefreshToken(ctx context.Context, rawToken string) (*User, string, string, error) {
+	if rawToken == "" {
+		return nil, "", "", ErrInvalidRefreshToken
+	}
+
+	tokenHash := hashToken(rawToken)
+	rt, err := s.refreshRepo.FindRefreshTokenByHash(ctx, tokenHash)
+	if err != nil {
+		if errors.Is(err, ErrRefreshTokenNotFound) {
+			return nil, "", "", ErrInvalidRefreshToken
+		}
+		return nil, "", "", err
+	}
+
+	// Reuse detection: if already revoked, revoke all tokens for this user as a security measure
+	if rt.Revoked {
+		_ = s.RevokeAllUserTokens(ctx, rt.UserID)
+		return nil, "", "", ErrRefreshTokenReused
+	}
+
+	if time.Now().After(rt.ExpiresAt) {
+		return nil, "", "", ErrRefreshTokenExpired
+	}
+
+	user, err := s.userRepo.FindUserByID(ctx, rt.UserID)
+	if err != nil {
+		return nil, "", "", ErrInvalidRefreshToken
+	}
+
+	if !user.IsActive {
+		_ = s.RevokeAllUserTokens(ctx, user.ID)
+		return nil, "", "", ErrAccountInactive
+	}
+
+	// Rotate: Revoke the old token
+	if err := s.refreshRepo.RevokeRefreshToken(ctx, rt.ID); err != nil {
+		return nil, "", "", fmt.Errorf("failed to revoke old refresh token: %w", err)
+	}
+
+	// Issue new refresh token
+	newRefreshToken, err := s.issueRefreshToken(ctx, user.ID)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to issue rotated refresh token: %w", err)
+	}
+
+	// Issue new access token with latest user claims (e.g. updated role)
+	newAccessToken, err := s.jwtService.GenerateToken(user.ID, user.Email, string(user.Role))
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to issue new jwt access token: %w", err)
+	}
+
+	return user, newAccessToken, newRefreshToken, nil
+}
+
+// RevokeRefreshToken marks the specified refresh token as revoked upon user logout.
+// Why: Ensures logged out refresh tokens cannot be used to generate future access tokens.
+func (s *Service) RevokeRefreshToken(ctx context.Context, rawToken string) error {
+	if rawToken == "" {
+		return nil
+	}
+
+	tokenHash := hashToken(rawToken)
+	rt, err := s.refreshRepo.FindRefreshTokenByHash(ctx, tokenHash)
+	if err != nil {
+		if errors.Is(err, ErrRefreshTokenNotFound) {
+			return nil
+		}
+		return err
+	}
+
+	if !rt.Revoked {
+		return s.refreshRepo.RevokeRefreshToken(ctx, rt.ID)
+	}
+	return nil
+}
+
+// RevokeAllUserTokens revokes all database refresh tokens for a user and blacklists their ID in Redis.
+// Why: Provides instantaneous invalidation of all existing access and refresh tokens when accounts are banned, deleted, or compromised.
+func (s *Service) RevokeAllUserTokens(ctx context.Context, userID string) error {
+	if err := s.refreshRepo.RevokeAllUserRefreshTokens(ctx, userID); err != nil {
+		return fmt.Errorf("failed to revoke user refresh tokens: %w", err)
+	}
+
+	if s.rdb != nil {
+		if err := platformRedis.BlacklistUser(ctx, s.rdb, userID, 900*time.Second, "revoked_all_tokens"); err != nil {
+			return fmt.Errorf("failed to blacklist user in redis: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // ForgotPassword initiates a password recovery flow by issuing an OTP if the account exists,
 // while shielding user presence to prevent account enumeration attacks.
+// Why: Safeguards account recovery without revealing registered email addresses to unauthenticated callers.
 func (s *Service) ForgotPassword(ctx context.Context, email string) error {
 	user, err := s.userRepo.FindUserByEmail(ctx, email)
 	if err != nil {
@@ -131,6 +262,7 @@ func (s *Service) ForgotPassword(ctx context.Context, email string) error {
 }
 
 // ResetPassword validates the recovery OTP, hashes the new password, updates storage, and invalidates active OTP codes.
+// Why: Ensures only verified OTP holders can update their password hash and prevents code reuse.
 func (s *Service) ResetPassword(ctx context.Context, req otp.ResetPasswordRequest) error {
 	user, err := s.userRepo.FindUserByEmail(ctx, req.Email)
 	if err != nil {
@@ -156,6 +288,38 @@ func (s *Service) ResetPassword(ctx context.Context, req otp.ResetPasswordReques
 }
 
 // GetUserByID retrieves user entity by ID.
+// Why: Provides internal service layer lookup for authenticated user profile retrieval.
 func (s *Service) GetUserByID(ctx context.Context, id string) (*User, error) {
 	return s.userRepo.FindUserByID(ctx, id)
 }
+
+func (s *Service) issueRefreshToken(ctx context.Context, userID string) (string, error) {
+	rawToken, err := generateRandomToken(32)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate random token bytes: %w", err)
+	}
+
+	tokenHash := hashToken(rawToken)
+	expiresAt := time.Now().Add(time.Duration(s.refreshExpiryDays) * 24 * time.Hour)
+
+	_, err = s.refreshRepo.CreateRefreshToken(ctx, userID, tokenHash, expiresAt)
+	if err != nil {
+		return "", fmt.Errorf("failed to store refresh token in database: %w", err)
+	}
+
+	return rawToken, nil
+}
+
+func generateRandomToken(n int) (string, error) {
+	bytes := make([]byte, n)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(bytes), nil
+}
+
+func hashToken(rawToken string) string {
+	hash := sha256.Sum256([]byte(rawToken))
+	return hex.EncodeToString(hash[:])
+}
+

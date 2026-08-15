@@ -1,0 +1,35 @@
+# Version control
+.git
+.gitignore
+
+# Environment files & Secrets
+.env
+.env.*
+*.env
+keys/*.pem
+*.pem
+private.pem
+public.pem
+
+# Go build binaries & test artifacts
+bin/
+main
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Prisma Client Go OS-specific pre-generated binaries
+prisma/db/*_gen.go
+
+# Tooling, IDE, and Agent workspace
+.agent
+.vscode
+.idea
+openspec
+graphify-out
+
+# Documentation and API test collections
+docs/
+*.postman_collection.json

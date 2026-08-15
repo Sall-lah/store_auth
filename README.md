@@ -63,7 +63,7 @@ go run github.com/steebchen/prisma-client-go db push
 ```
 
 ---
-### 4. Running the Service
+### 4. Running the Service Locally
 
 Start the Auth HTTP server:
 
@@ -72,6 +72,27 @@ go run cmd/server/main.go
 ```
 
 The server starts on `http://localhost:8080`.
+
+---
+
+### 5. Running with Docker & Docker Compose
+
+Ensure RSA keys are generated in `./keys/` first:
+
+```bash
+go run scripts/gen_keys.go
+```
+
+Start the containerized service along with Redis:
+
+```bash
+docker compose up --build -d
+```
+
+- The API will be available on `http://localhost:8080`
+- Redis runs in background and maps to port `6379`
+- RSA keys are mounted read-only from `./keys` into the container at `/app/keys`
+- To stop the services: `docker compose down`
 
 ---
 

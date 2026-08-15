@@ -22,6 +22,16 @@ type User struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// RefreshToken represents the domain entity for stateful refresh tokens.
+type RefreshToken struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	TokenHash string    `json:"token_hash"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Revoked   bool      `json:"revoked"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // RegisterRequest contains payload data for creating a new pending user account.
 type RegisterRequest struct {
 	Email    string `json:"email"`
