@@ -83,16 +83,16 @@ Ensure RSA keys are generated in `./keys/` first:
 go run scripts/gen_keys.go
 ```
 
-Start the containerized service along with Redis:
+Start the containerized service:
 
 ```bash
 docker compose up --build -d
 ```
 
 - The API will be available on `http://localhost:8080`
-- Redis runs in background and maps to port `6379`
+- Connects to your local Redis instance on the host via `host.docker.internal:6379` (or `REDIS_URL` in `.env`)
 - RSA keys are mounted read-only from `./keys` into the container at `/app/keys`
-- To stop the services: `docker compose down`
+- To stop the service: `docker compose down`
 
 ---
 
