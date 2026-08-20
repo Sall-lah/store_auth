@@ -9,12 +9,17 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// NewClient initializes a Redis client connected to the given URL string and validates connectivity via ping.
-// Why: Establishes a shared Redis connection pool and logs connectivity status for caching and rate limiting.
-func NewClient(redisURL string) (*redis.Client, error) {
+// NewClient initializes a Redis client connected to the given URL string and optional explicit password,
+// validating connectivity via ping.
+// Why: Establishes a shared Redis connection pool and applies runtime credentials for caching and rate limiting.
+func NewClient(redisURL string, password ...string) (*redis.Client, error) {
 	opts, err := redis.ParseURL(redisURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid redis url: %w", err)
+	}
+
+	if len(password) > 0 && password[0] != "" {
+		opts.Password = password[0]
 	}
 
 	rdb := redis.NewClient(opts)

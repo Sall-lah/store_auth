@@ -40,7 +40,7 @@ func main() {
 	}()
 	log.Println("[SERVER SETUP] Connected to database successfully.")
 
-	rdb, err := redis.NewClient(cfg.RedisURL)
+	rdb, err := redis.NewClient(cfg.RedisURL, cfg.RedisPassword)
 	if err != nil {
 		log.Printf("[WARNING] Redis client initialization warning: %v", err)
 	}

@@ -40,4 +40,20 @@ func TestConfig(t *testing.T) {
 			t.Errorf("expected default JWTRefreshExpiryDays 7; got %d", cfg.JWTRefreshExpiryDays)
 		}
 	})
+
+	t.Run("loads custom REDIS_PASSWORD when provided", func(t *testing.T) {
+		_ = os.Setenv("DATABASE_URL", "postgresql://localhost:5432/test")
+		_ = os.Setenv("REDIS_PASSWORD", "custom_redis_pass")
+		defer os.Unsetenv("DATABASE_URL")
+		defer os.Unsetenv("REDIS_PASSWORD")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+
+		if cfg.RedisPassword != "custom_redis_pass" {
+			t.Errorf("expected RedisPassword 'custom_redis_pass'; got %s", cfg.RedisPassword)
+		}
+	})
 }
