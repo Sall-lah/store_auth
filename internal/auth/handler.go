@@ -339,6 +339,10 @@ func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("X-User-Id", user.ID)
+	w.Header().Set("X-User-Role", string(user.Role))
+	w.Header().Set("X-User-Email", user.Email)
+
 	respondJSON(w, http.StatusOK, user.ToUserResponse())
 }
 

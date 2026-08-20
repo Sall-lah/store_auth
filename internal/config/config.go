@@ -15,6 +15,7 @@ type Config struct {
 	Env                   string
 	DatabaseURL           string
 	RedisURL              string
+	RedisPassword         string
 	RateLimitMaxRequests  int
 	RateLimitWindowSec    time.Duration
 	JWTPrivateKeyPath      string
@@ -43,6 +44,7 @@ func Load() (*Config, error) {
 		Env:                    getEnv("ENV", "development"),
 		DatabaseURL:            os.Getenv("DATABASE_URL"),
 		RedisURL:               getEnv("REDIS_URL", "redis://localhost:6379"),
+		RedisPassword:          os.Getenv("REDIS_PASSWORD"),
 		RateLimitMaxRequests:  getEnvAsInt("RATE_LIMIT_MAX_REQUESTS", 10),
 		JWTPrivateKeyPath:      getEnv("JWT_PRIVATE_KEY_PATH", "./keys/private.pem"),
 		JWTPublicKeyPath:       getEnv("JWT_PUBLIC_KEY_PATH", "./keys/public.pem"),
