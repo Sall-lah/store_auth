@@ -50,6 +50,12 @@ type ForgotPasswordRequest struct {
 	Email string `json:"email"`
 }
 
+// ResendOTPRequest contains parameters for dispatching a fresh verification code.
+type ResendOTPRequest struct {
+	Email string `json:"email"`
+	Type  string `json:"type"`
+}
+
 // UserResponse is the safe external representation of a user entity excluding credentials.
 type UserResponse struct {
 	ID        string    `json:"id"`

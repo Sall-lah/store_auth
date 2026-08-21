@@ -100,6 +100,26 @@ func (r *Repository) UpdateUserPassword(ctx context.Context, id, passwordHash st
 	return nil
 }
 
+// UpdateUnverifiedUserCredentials updates the user's display name and password hash during unverified account re-registration.
+// Why: Allows pending inactive users to update their credentials or fix typos prior to confirming email ownership.
+func (r *Repository) UpdateUnverifiedUserCredentials(ctx context.Context, id, name, passwordHash string) (*User, error) {
+	updated, err := r.client.User.FindUnique(
+		db.User.ID.Equals(id),
+	).Update(
+		db.User.Name.Set(name),
+		db.User.Password.Set(passwordHash),
+	).Exec(ctx)
+
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, ErrUserNotFound
+		}
+		return nil, fmt.Errorf("failed to update unverified user credentials: %w", err)
+	}
+
+	return mapPrismaUserToModel(updated), nil
+}
+
 // ActivateUser sets is_active to true once registration OTP has been verified.
 func (r *Repository) ActivateUser(ctx context.Context, id string) error {
 	_, err := r.client.User.FindUnique(

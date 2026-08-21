@@ -41,6 +41,7 @@ func SetupRouter(authHandler *auth.Handler, jwksHandler *jwt.Handler, rateLimite
 			}
 			r.Post("/register", authHandler.Register)
 			r.Post("/verify-otp", authHandler.VerifyOTP)
+			r.Post("/resend-otp", authHandler.ResendOTP)
 			r.Post("/login", authHandler.Login)
 			r.Post("/refresh", authHandler.Refresh)
 			r.Post("/forgot-password", authHandler.ForgotPassword)

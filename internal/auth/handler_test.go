@@ -84,6 +84,59 @@ func TestHandler_Validation(t *testing.T) {
 	})
 }
 
+func TestHandler_ResendOTPValidation(t *testing.T) {
+	h := NewHandler(nil, false)
+
+	t.Run("missing type and invalid email", func(t *testing.T) {
+		payload, _ := json.Marshal(ResendOTPRequest{
+			Email: "invalid-email",
+			Type:  "",
+		})
+
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/resend-otp", bytes.NewReader(payload))
+		rec := httptest.NewRecorder()
+
+		h.ResendOTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status %d; got %d", http.StatusBadRequest, rec.Code)
+		}
+
+		var errResp ErrorResponse
+		_ = json.Unmarshal(rec.Body.Bytes(), &errResp)
+
+		if errResp.Details["email"] != "Invalid email format" {
+			t.Errorf("expected email validation error; got %v", errResp.Details["email"])
+		}
+		if errResp.Details["type"] != "OTP type is required (registration or password_reset)" {
+			t.Errorf("expected type validation error; got %v", errResp.Details["type"])
+		}
+	})
+
+	t.Run("invalid type value", func(t *testing.T) {
+		payload, _ := json.Marshal(ResendOTPRequest{
+			Email: "valid@example.com",
+			Type:  "unsupported_type",
+		})
+
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/resend-otp", bytes.NewReader(payload))
+		rec := httptest.NewRecorder()
+
+		h.ResendOTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status %d; got %d", http.StatusBadRequest, rec.Code)
+		}
+
+		var errResp ErrorResponse
+		_ = json.Unmarshal(rec.Body.Bytes(), &errResp)
+
+		if errResp.Details["type"] != "Invalid OTP type, must be 'registration' or 'password_reset'" {
+			t.Errorf("expected invalid type error; got %v", errResp.Details["type"])
+		}
+	})
+}
+
 func middlewareDefaultMaxBodyBytesForTest() int64 {
 	return 1 << 20
 }

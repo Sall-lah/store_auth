@@ -1,93 +1,124 @@
 package otp
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log"
-	"net/mail"
-	"net/smtp"
 	"strings"
+	"time"
+
+	"store_auth/internal/platform/kafka"
 )
 
-// OTPSender abstracts out external SMS/Email OTP transport mechanisms, allowing environment-specific senders.
+// OTPSender abstracts notification transport mechanisms for OTP delivery.
+// Why: Enables hot-swappable delivery mechanisms (e.g. Kafka event dispatching in production, stdout logging in tests).
 type OTPSender interface {
-	Send(destination, code string) error
+	SendOTP(ctx context.Context, email, code, name string, otpType Type) error
 }
 
 // LogOTPSender is a mock/development implementation of OTPSender that logs OTP codes to standard output.
 type LogOTPSender struct{}
 
-// Send logs the generated OTP code to console for local testing without external gateway costs.
-func (s *LogOTPSender) Send(destination, code string) error {
-	log.Printf("[OTP DEV LOG] Sending OTP Code '%s' to target: '%s'", code, destination)
+// SendOTP logs the generated OTP code and metadata to console for local testing without external broker dependencies.
+// Why: Provides lightweight offline debugging and test verification capabilities.
+func (s *LogOTPSender) SendOTP(ctx context.Context, email, code, name string, otpType Type) error {
+	log.Printf("[OTP DEV LOG] Sending %s OTP Code '%s' to '%s' (User: '%s')", otpType, code, email, name)
 	return nil
 }
 
-// SMTPOTPSender delivers OTP verification codes via SMTP email transport.
-type SMTPOTPSender struct {
-	host     string
-	port     int
-	username string
-	password string
-	from     string
+// EventEnvelope models the standard message envelope format consumed by store_notification.
+type EventEnvelope struct {
+	EventID   string           `json:"event_id"`
+	EventType string           `json:"event_type"`
+	Timestamp time.Time        `json:"timestamp"`
+	Producer  string           `json:"producer"`
+	Data      AuthOtpEventData `json:"data"`
 }
 
-// NewSMTPOTPSender constructs an SMTP sender instance configured with target relay server credentials.
-func NewSMTPOTPSender(host string, port int, username, password, from string) *SMTPOTPSender {
-	if from == "" {
-		from = username
+// AuthOtpEventData models the payload consumed by store_notification for rendering OTP email templates.
+type AuthOtpEventData struct {
+	Email string `json:"email"`
+	Code  string `json:"code"`
+	Name  string `json:"name"`
+	Type  string `json:"type"`
+}
+
+// KafkaOTPSender delivers OTP verification events to store_notification via Apache Kafka.
+type KafkaOTPSender struct {
+	producer kafka.Producer
+	topic    string
+}
+
+// NewKafkaOTPSender constructs a KafkaOTPSender bound to a Kafka producer client and destination topic.
+// Why: Injects Kafka message broker dependencies to publish auth lifecycle domain events.
+func NewKafkaOTPSender(producer kafka.Producer, topic string) *KafkaOTPSender {
+	if topic == "" {
+		topic = "auth.events"
 	}
-	return &SMTPOTPSender{
-		host:     host,
-		port:     port,
-		username: username,
-		password: password,
-		from:     from,
+	return &KafkaOTPSender{
+		producer: producer,
+		topic:    topic,
 	}
 }
 
-// Send transmits an HTML formatted OTP verification email to the destination address via SMTP.
-func (s *SMTPOTPSender) Send(destination, code string) error {
-	addr := fmt.Sprintf("%s:%d", s.host, s.port)
-	auth := smtp.PlainAuth("", s.username, s.password, s.host)
-
-	envelopeFrom := s.username
-	if parsed, err := mail.ParseAddress(s.from); err == nil {
-		envelopeFrom = parsed.Address
-	} else if s.from != "" {
-		envelopeFrom = s.from
-	}
-
-	subject := "Your Verification Code"
-	fromHeader := s.from
-	if fromHeader == "" {
-		fromHeader = s.username
-	}
-
-	body := fmt.Sprintf("Subject: %s\r\n"+
-		"From: %s\r\n"+
-		"To: %s\r\n"+
-		"MIME-Version: 1.0\r\n"+
-		"Content-Type: text/html; charset=UTF-8\r\n\r\n"+
-		"<div style=\"font-family: Arial, sans-serif; padding: 20px;\">"+
-		"<h2>Your Verification Code</h2>"+
-		"<p>Use the following 6-digit code to complete your verification:</p>"+
-		"<h1 style=\"font-size: 32px; letter-spacing: 5px; color: #2563eb;\">%s</h1>"+
-		"<p>This code expires in 5 minutes. If you did not request this code, please ignore this email.</p>"+
-		"</div>", subject, fromHeader, destination, code)
-
-	err := smtp.SendMail(addr, auth, envelopeFrom, []string{destination}, []byte(body))
+// SendOTP creates a validated EventEnvelope and publishes it to the configured Kafka topic.
+// Why: Dispatches asynchronous events to store_notification for template rendering and email transmission.
+func (s *KafkaOTPSender) SendOTP(ctx context.Context, email, code, name string, otpType Type) error {
+	eventID, err := generateUUID()
 	if err != nil {
-		return fmt.Errorf("failed to send email via SMTP: %w", err)
+		return fmt.Errorf("failed to generate event id: %w", err)
 	}
 
-	log.Printf("[OTP SMTP LOG] Successfully sent OTP code to '%s'", destination)
+	eventType := "auth.registration_otp"
+	if otpType == TypePasswordReset {
+		eventType = "auth.password_reset_otp"
+	}
+
+	envelope := EventEnvelope{
+		EventID:   eventID,
+		EventType: eventType,
+		Timestamp: time.Now().UTC(),
+		Producer:  "store_auth",
+		Data: AuthOtpEventData{
+			Email: email,
+			Code:  code,
+			Name:  name,
+			Type:  string(otpType),
+		},
+	}
+
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("failed to marshal otp event envelope: %w", err)
+	}
+
+	if err := s.producer.Publish(ctx, s.topic, email, payload); err != nil {
+		return fmt.Errorf("failed to publish otp event to kafka topic %s: %w", s.topic, err)
+	}
+
+	log.Printf("[OTP KAFKA LOG] Successfully published '%s' event for '%s' to topic '%s'", eventType, email, s.topic)
 	return nil
 }
 
-// NewOTPSender constructs an appropriate OTPSender instance based on the specified provider strategy ("smtp" vs "mock").
-func NewOTPSender(provider, host string, port int, username, password, from string) OTPSender {
-	if strings.ToLower(provider) == "smtp" {
-		return NewSMTPOTPSender(host, port, username, password, from)
+// NewOTPSender constructs an appropriate OTPSender instance based on the specified provider strategy ("kafka" vs "mock").
+// Why: Simplifies dependency injection by selecting the configured OTP delivery implementation at runtime.
+func NewOTPSender(provider string, producer kafka.Producer, topic string) OTPSender {
+	if strings.ToLower(provider) == "kafka" && producer != nil {
+		return NewKafkaOTPSender(producer, topic)
 	}
 	return &LogOTPSender{}
+}
+
+// generateUUID creates an RFC 4122 v4 compliant UUID using cryptographically secure random bytes.
+// Why: Guarantees unique event IDs for Redis idempotency deduplication in store_notification without external CGo dependencies.
+func generateUUID() (string, error) {
+	var uuid [16]byte
+	if _, err := rand.Read(uuid[:]); err != nil {
+		return "", err
+	}
+	uuid[6] = (uuid[6] & 0x0f) | 0x40
+	uuid[8] = (uuid[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", uuid[0:4], uuid[4:6], uuid[6:8], uuid[8:10], uuid[10:]), nil
 }
