@@ -26,11 +26,8 @@ type Config struct {
 	OTPExpiryMinutes       int
 	OTPMaxAttempts         int
 	OTPProvider            string
-	SMTPHost               string
-	SMTPPort               int
-	SMTPUsername           string
-	SMTPPassword           string
-	SMTPFrom               string
+	KafkaBrokers           string
+	KafkaTopicAuthEvents   string
 }
 
 // Load reads environment variables from a .env file (if present) and process environment,
@@ -51,14 +48,11 @@ func Load() (*Config, error) {
 		JWTAccessExpiryMinutes: getEnvAsInt("JWT_ACCESS_EXPIRY_MINUTES", 15),
 		JWTRefreshExpiryDays:   getEnvAsInt("JWT_REFRESH_EXPIRY_DAYS", 7),
 		BcryptCost:             getEnvAsInt("BCRYPT_COST", 12),
-		OTPExpiryMinutes:     getEnvAsInt("OTP_EXPIRY_MINUTES", 5),
-		OTPMaxAttempts:       getEnvAsInt("OTP_MAX_ATTEMPTS", 5),
-		OTPProvider:          getEnv("OTP_PROVIDER", "mock"),
-		SMTPHost:             getEnv("SMTP_HOST", "smtp.gmail.com"),
-		SMTPPort:             getEnvAsInt("SMTP_PORT", 587),
-		SMTPUsername:         os.Getenv("SMTP_USERNAME"),
-		SMTPPassword:         os.Getenv("SMTP_PASSWORD"),
-		SMTPFrom:             getEnv("SMTP_FROM", os.Getenv("SMTP_USERNAME")),
+		OTPExpiryMinutes:       getEnvAsInt("OTP_EXPIRY_MINUTES", 5),
+		OTPMaxAttempts:         getEnvAsInt("OTP_MAX_ATTEMPTS", 5),
+		OTPProvider:            getEnv("OTP_PROVIDER", "kafka"),
+		KafkaBrokers:           getEnv("KAFKA_BROKERS", "localhost:9092"),
+		KafkaTopicAuthEvents:   getEnv("KAFKA_TOPIC_AUTH_EVENTS", "auth.events"),
 	}
 
 	windowSec := getEnvAsInt("RATE_LIMIT_WINDOW_SECONDS", 1)

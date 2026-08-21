@@ -145,6 +145,44 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/auth/resend-otp:
+    post:
+      tags:
+        - Authentication
+      summary: Resend OTP verification code
+      description: |
+        Dispatches a fresh 6-digit OTP code to the provided email address for either registration activation (if unverified) or password reset.
+      operationId: resendOTP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResendOTPRequest"
+      responses:
+        "200":
+          description: Verification code successfully dispatched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: A new verification code has been sent to your email.
+        "400":
+          description: Validation failure or account already verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: Account is already verified. Please log in.
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/auth/login:
     post:
       tags:
@@ -450,6 +488,23 @@ components:
           type: string
           format: email
           example: user@example.com
+
+    ResendOTPRequest:
+      type: object
+      required:
+        - email
+        - type
+      properties:
+        email:
+          type: string
+          format: email
+          example: customer@example.com
+        type:
+          type: string
+          enum:
+            - registration
+            - password_reset
+          example: registration
 
     ResetPasswordRequest:
       type: object

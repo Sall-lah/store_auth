@@ -88,14 +88,11 @@ cp .env.example .env
 | `RATE_LIMIT_MAX_REQUESTS` | Maximum requests per sliding window | `10` | No |
 | `RATE_LIMIT_WINDOW_SECONDS`| Sliding rate limit window duration in seconds | `1` | No |
 | `BCRYPT_COST` | Hashing cost factor for bcrypt | `12` | No |
-| `OTP_PROVIDER` | OTP dispatch provider (`mock` or `smtp`) | `mock` | No |
+| `OTP_PROVIDER` | OTP dispatch provider (`kafka` or `mock`) | `kafka` | No |
 | `OTP_EXPIRY_MINUTES` | OTP code expiration time in minutes | `5` | No |
 | `OTP_MAX_ATTEMPTS` | Maximum allowed invalid OTP submission attempts | `5` | No |
-| `SMTP_HOST` | SMTP server hostname for email delivery | `smtp.gmail.com` | No |
-| `SMTP_PORT` | SMTP server port | `587` | No |
-| `SMTP_USERNAME` | SMTP authentication username / sender address | — | No |
-| `SMTP_PASSWORD` | SMTP authentication app password | — | No |
-| `SMTP_FROM` | Outgoing sender email address | `${SMTP_USERNAME}` | No |
+| `KAFKA_BROKERS` | Comma-separated Kafka broker addresses | `localhost:9092` | No |
+| `KAFKA_TOPIC_AUTH_EVENTS` | Kafka topic for auth lifecycle domain events | `auth.events` | No |
 
 ---
 

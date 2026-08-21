@@ -112,6 +112,56 @@ func (h *Handler) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ResendOTP processes requests to dispatch a fresh verification OTP code.
+// Why: Enables users to request a new code when original codes expire or are lost, while guarding against enumeration.
+func (h *Handler) ResendOTP(w http.ResponseWriter, r *http.Request) {
+	var req ResendOTPRequest
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+
+	req.Email = sanitizer.NormalizeEmail(req.Email)
+	req.Type = strings.TrimSpace(req.Type)
+
+	details := make(map[string]string)
+	if err := validateEmail(req.Email); err != nil {
+		details["email"] = err.Error()
+	}
+	if req.Type == "" {
+		details["type"] = "OTP type is required (registration or password_reset)"
+	} else if strings.ToLower(req.Type) != "registration" && strings.ToLower(req.Type) != "password_reset" {
+		details["type"] = "Invalid OTP type, must be 'registration' or 'password_reset'"
+	}
+
+	if len(details) > 0 {
+		respondWithError(w, http.StatusBadRequest, "Validation failed", details)
+		return
+	}
+
+	if err := h.authService.ResendOTP(r.Context(), req); err != nil {
+		switch {
+		case errors.Is(err, ErrAccountAlreadyActive):
+			respondWithError(w, http.StatusBadRequest, "Account is already verified. Please log in.", nil)
+		case errors.Is(err, ErrUserNotFound):
+			respondWithError(w, http.StatusBadRequest, "User account not found", nil)
+		case errors.Is(err, ErrInvalidOTPType):
+			respondWithError(w, http.StatusBadRequest, "Invalid OTP type", nil)
+		default:
+			respondWithError(w, http.StatusInternalServerError, "Failed to resend OTP", nil)
+		}
+		return
+	}
+
+	msg := "A new verification code has been sent to your email."
+	if strings.ToLower(req.Type) == "password_reset" {
+		msg = "If the email is registered, a password reset code has been sent."
+	}
+
+	respondJSON(w, http.StatusOK, map[string]string{
+		"message": msg,
+	})
+}
+
 // Login authenticates credentials and sets HttpOnly access and refresh token cookies on successful validation.
 // Why: Grants authenticated session access via secure HTTP cookies after credential verification.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {

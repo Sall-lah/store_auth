@@ -55,8 +55,9 @@ func (s *Service) GenerateOTP(ctx context.Context, userID string, otpType Type) 
 }
 
 // SendOTP triggers delivery of the generated OTP code to the target destination via the configured OTPSender interface.
-func (s *Service) SendOTP(destination, code string) error {
-	return s.sender.Send(destination, code)
+// Why: Delegates notification event publishing and formatting to the configured transport provider.
+func (s *Service) SendOTP(ctx context.Context, email, code, name string, otpType Type) error {
+	return s.sender.SendOTP(ctx, email, code, name, otpType)
 }
 
 // VerifyOTP validates an incoming user-entered OTP against the stored active record for that flow.

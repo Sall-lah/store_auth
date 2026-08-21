@@ -36,7 +36,7 @@ model OTPCode {
   id        String   @id @default(uuid()) @db.Uuid
   userId    String   @map("user_id") @db.Uuid
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  code      String
+  code      String?
   type      OTPType
   attempts  Int      @default(0)
   expiresAt DateTime @map("expires_at")

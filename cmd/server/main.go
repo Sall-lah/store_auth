@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"store_auth/internal/jwt"
 	"store_auth/internal/middleware"
 	"store_auth/internal/otp"
+	"store_auth/internal/platform/kafka"
 	"store_auth/internal/platform/redis"
 	"store_auth/internal/router"
 	"store_auth/prisma/db"
@@ -45,6 +47,23 @@ func main() {
 		log.Printf("[WARNING] Redis client initialization warning: %v", err)
 	}
 
+	// Initialize Kafka producer for domain event publishing
+	var kafkaProducer kafka.Producer
+	if strings.ToLower(cfg.OTPProvider) == "kafka" {
+		brokers := strings.Split(cfg.KafkaBrokers, ",")
+		for i := range brokers {
+			brokers[i] = strings.TrimSpace(brokers[i])
+		}
+		producer := kafka.NewProducer(brokers)
+		defer func() {
+			if err := producer.Close(); err != nil {
+				log.Printf("[WARNING] Error closing Kafka producer: %v", err)
+			}
+		}()
+		kafkaProducer = producer
+		log.Printf("[SERVER SETUP] Initialized Kafka producer for brokers: %v", brokers)
+	}
+
 	// Initialize repositories per feature
 	userRepo := auth.NewRepository(prismaClient)
 	refreshRepo := auth.NewRefreshRepository(prismaClient)
@@ -56,7 +75,7 @@ func main() {
 		log.Fatalf("[FATAL] Failed to initialize JWT service: %v", err)
 	}
 
-	otpSender := otp.NewOTPSender(cfg.OTPProvider, cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
+	otpSender := otp.NewOTPSender(cfg.OTPProvider, kafkaProducer, cfg.KafkaTopicAuthEvents)
 	otpSvc := otp.NewService(otpRepo, otpSender, cfg.OTPExpiryMinutes, cfg.OTPMaxAttempts)
 	authSvc := auth.NewService(userRepo, refreshRepo, otpSvc, jwtSvc, rdb, cfg.BcryptCost, cfg.JWTRefreshExpiryDays)
 

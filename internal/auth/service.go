@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -20,10 +21,12 @@ import (
 var (
 	ErrInvalidCredentials  = errors.New("invalid email or password")
 	ErrAccountInactive     = errors.New("user account is inactive, please verify registration OTP")
+	ErrAccountAlreadyActive = errors.New("account is already verified, please log in")
 	ErrEmailTaken          = errors.New("email address is already registered")
 	ErrInvalidRefreshToken = errors.New("invalid refresh token")
 	ErrRefreshTokenExpired = errors.New("refresh token has expired")
 	ErrRefreshTokenReused  = errors.New("refresh token reuse detected")
+	ErrInvalidOTPType      = errors.New("invalid otp type, must be 'registration' or 'password_reset'")
 )
 
 // Service encapsulates authentication logic, credential processing, and feature integration.
@@ -62,17 +65,38 @@ func NewService(
 	}
 }
 
-// Register creates an inactive user account, generates a registration verification OTP, and triggers transmission.
-// Why: Initializes user identity in pending state until email ownership is proven.
+// Register creates an inactive user account or refreshes credentials for an unverified account, generating and dispatching an OTP.
+// Why: Initializes user identity in pending state until email ownership is proven, and prevents user lockout when re-registering an unverified account.
 func (s *Service) Register(ctx context.Context, req RegisterRequest) error {
-	existing, err := s.userRepo.FindUserByEmail(ctx, req.Email)
-	if err == nil && existing != nil {
-		return ErrEmailTaken
-	}
-
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), s.bcryptCost)
 	if err != nil {
 		return fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	existing, err := s.userRepo.FindUserByEmail(ctx, req.Email)
+	if err == nil && existing != nil {
+		if existing.IsActive {
+			return ErrEmailTaken
+		}
+
+		// Re-registration flow for inactive user: update name & password, invalidate old OTPs, issue new OTP
+		user, err := s.userRepo.UpdateUnverifiedUserCredentials(ctx, existing.ID, req.Name, string(hashedPassword))
+		if err != nil {
+			return fmt.Errorf("failed to update unverified user credentials: %w", err)
+		}
+
+		_ = s.otpService.InvalidateUserOTPs(ctx, user.ID, otp.TypeRegistration)
+
+		otpCode, err := s.otpService.GenerateOTP(ctx, user.ID, otp.TypeRegistration)
+		if err != nil {
+			return fmt.Errorf("failed to generate registration otp: %w", err)
+		}
+
+		if err := s.otpService.SendOTP(ctx, user.Email, otpCode.Code, user.Name, otp.TypeRegistration); err != nil {
+			return fmt.Errorf("failed to send registration otp: %w", err)
+		}
+
+		return nil
 	}
 
 	user, err := s.userRepo.CreateUser(ctx, req.Email, string(hashedPassword), req.Name, RoleCustomer)
@@ -88,7 +112,7 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) error {
 		return fmt.Errorf("failed to generate registration otp: %w", err)
 	}
 
-	if err := s.otpService.SendOTP(user.Email, otpCode.Code); err != nil {
+	if err := s.otpService.SendOTP(ctx, user.Email, otpCode.Code, user.Name, otp.TypeRegistration); err != nil {
 		return fmt.Errorf("failed to send registration otp: %w", err)
 	}
 
@@ -96,7 +120,7 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) error {
 }
 
 // VerifyRegistrationOTP verifies the user's registration activation code and activates their account status upon success.
-// Why: Prevents unauthorized login until the owner validates the delivered one-time passcode.
+// Why: Prevents unauthorized login until the owner validates the delivered one-time passcode and purges lingering verification codes.
 func (s *Service) VerifyRegistrationOTP(ctx context.Context, req otp.VerifyOTPRequest) error {
 	user, err := s.userRepo.FindUserByEmail(ctx, req.Email)
 	if err != nil {
@@ -110,6 +134,8 @@ func (s *Service) VerifyRegistrationOTP(ctx context.Context, req otp.VerifyOTPRe
 	if err := s.userRepo.ActivateUser(ctx, user.ID); err != nil {
 		return fmt.Errorf("failed to activate account: %w", err)
 	}
+
+	_ = s.otpService.InvalidateUserOTPs(ctx, user.ID, otp.TypeRegistration)
 
 	return nil
 }
@@ -249,16 +275,83 @@ func (s *Service) ForgotPassword(ctx context.Context, email string) error {
 		return nil
 	}
 
+	if !user.IsActive {
+		return nil
+	}
+
+	_ = s.otpService.InvalidateUserOTPs(ctx, user.ID, otp.TypePasswordReset)
+
 	otpCode, err := s.otpService.GenerateOTP(ctx, user.ID, otp.TypePasswordReset)
 	if err != nil {
 		return fmt.Errorf("failed to generate password reset otp: %w", err)
 	}
 
-	if err := s.otpService.SendOTP(user.Email, otpCode.Code); err != nil {
+	if err := s.otpService.SendOTP(ctx, user.Email, otpCode.Code, user.Name, otp.TypePasswordReset); err != nil {
 		return fmt.Errorf("failed to send password reset otp: %w", err)
 	}
 
 	return nil
+}
+
+// ResendOTP dispatches a fresh OTP code for either registration activation or password recovery.
+// Why: Enables users to request a new verification code if their initial code expired or was lost, with enumeration protection on reset flows.
+func (s *Service) ResendOTP(ctx context.Context, req ResendOTPRequest) error {
+	normalizedType := strings.ToLower(strings.TrimSpace(req.Type))
+	switch normalizedType {
+	case "registration":
+		user, err := s.userRepo.FindUserByEmail(ctx, req.Email)
+		if err != nil {
+			if errors.Is(err, ErrUserNotFound) {
+				return ErrUserNotFound
+			}
+			return err
+		}
+
+		if user.IsActive {
+			return ErrAccountAlreadyActive
+		}
+
+		_ = s.otpService.InvalidateUserOTPs(ctx, user.ID, otp.TypeRegistration)
+
+		otpCode, err := s.otpService.GenerateOTP(ctx, user.ID, otp.TypeRegistration)
+		if err != nil {
+			return fmt.Errorf("failed to generate registration otp: %w", err)
+		}
+
+		if err := s.otpService.SendOTP(ctx, user.Email, otpCode.Code, user.Name, otp.TypeRegistration); err != nil {
+			return fmt.Errorf("failed to send registration otp: %w", err)
+		}
+
+		return nil
+
+	case "password_reset":
+		user, err := s.userRepo.FindUserByEmail(ctx, req.Email)
+		if err != nil {
+			// Anti-enumeration shield: return nil to avoid revealing user existence
+			return nil
+		}
+
+		if !user.IsActive {
+			// Do not send password reset OTPs to unverified accounts
+			return nil
+		}
+
+		_ = s.otpService.InvalidateUserOTPs(ctx, user.ID, otp.TypePasswordReset)
+
+		otpCode, err := s.otpService.GenerateOTP(ctx, user.ID, otp.TypePasswordReset)
+		if err != nil {
+			return fmt.Errorf("failed to generate password reset otp: %w", err)
+		}
+
+		if err := s.otpService.SendOTP(ctx, user.Email, otpCode.Code, user.Name, otp.TypePasswordReset); err != nil {
+			return fmt.Errorf("failed to send password reset otp: %w", err)
+		}
+
+		return nil
+
+	default:
+		return ErrInvalidOTPType
+	}
 }
 
 // ResetPassword validates the recovery OTP, hashes the new password, updates storage, and invalidates active OTP codes.
