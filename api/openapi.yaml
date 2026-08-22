@@ -9,6 +9,7 @@ info:
     - **RS256 Asymmetric JWT**: Tokens are signed with an RSA private key. Downstream microservices can independently verify tokens in-memory using the public key set from `GET /.well-known/jwks.json`.
     - **Cookie & Bearer Support**: Web clients receive `HttpOnly` secure cookies (`access_token`, `refresh_token`), while mobile and service clients can pass `Authorization: Bearer <access_token>`.
     - **API Gateway Integration**: In production, requests route through a central API Gateway (e.g. NGINX / Heroku Gateway) which handles perimeter security, rate limiting, and forwards identity headers (`X-User-Id`, `X-User-Role`, `X-User-Email`) downstream.
+    - **Event-Driven Architecture (Apache Kafka)**: Asynchronously publishes OTP events to `auth.events` (for `store_notification`) and consumes account lifecycle events from `user.events` (`user.banned`, `user.deleted`) to invalidate sessions in Redis and update PostgreSQL credentials.
 
 servers:
   - url: http://localhost:8080

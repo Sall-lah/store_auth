@@ -475,3 +475,73 @@ if rdb.Exists(ctx, "revoked:user:"+claims.Subject).Val() > 0 {
 2. **Clock Skew**: Ensure all servers synchronize time using NTP. Tokens expired by more than a few seconds will be rejected.
 3. **CORS & Cookies**: If using cookies across multiple subdomains (e.g. `auth.store.com` and `orders.store.com`), configure your DNS and cookie domain to `.store.com` with `SameSite=Lax` and `Secure=true`.
 4. **Interactive Testing via Swagger UI**: Test your endpoints interactively anytime by visiting `http://localhost:8080/docs` (standalone) or `https://store-gateway.herokuapp.com/docs` (via Gateway).
+
+---
+
+## 8. Asynchronous Event-Driven Integration (Apache Kafka)
+
+In addition to synchronous HTTP API Gateway offloading, `store_auth` participates in cross-service asynchronous event orchestration via Apache Kafka.
+
+### 8.1 Inbound Events Consumed by `store_auth`
+
+* **Topic**: `user.events` (Configurable via `KAFKA_TOPIC_USER_EVENTS`)
+* **Consumer Group**: `store-auth-user-events-group` (Configurable via `KAFKA_CONSUMER_GROUP_AUTH`)
+
+#### Event 1: `user.banned`
+Published by the `user` service when an administrator suspends or flags an account.
+
+```json
+{
+  "event": "user.banned",
+  "userId": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+  "timestamp": "2026-08-22T15:24:00Z",
+  "reason": "Terms of service violation / payment dispute"
+}
+```
+
+* **`store_auth` Action**:
+  1. Sets Redis key `revoked:user:{userId}` with 15-minute TTL to immediately invalidate active JWTs at the Gateway.
+  2. Revokes all active refresh tokens in PostgreSQL (`revoked = true`).
+  3. Updates user record in PostgreSQL to `is_active = false`.
+
+#### Event 2: `user.deleted`
+Published by the `user` service when a customer deletes their account or an administrator approves a GDPR removal request.
+
+```json
+{
+  "event": "user.deleted",
+  "userId": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+  "timestamp": "2026-08-22T15:24:00Z",
+  "reason": "Customer account deletion request"
+}
+```
+
+* **`store_auth` Action**:
+  1. Sets Redis key `revoked:user:{userId}` with 15-minute TTL to immediately kill active JWTs.
+  2. Permanently deletes the user record from PostgreSQL (cascading all `refresh_tokens` and `otp_codes`).
+  3. Frees the email address for future registrations.
+
+---
+
+### 8.2 Outbound Events Published by `store_auth`
+
+* **Topic**: `auth.events` (Configurable via `KAFKA_TOPIC_AUTH_EVENTS`)
+* **Consumer**: `store_notification`
+
+#### Event: `auth.registration_otp` / `auth.password_reset_otp`
+Published when a user registers or requests a password reset.
+
+```json
+{
+  "event_id": "b3e9b1d2-0a4e-4f76-88a2-7d1cf82e9b01",
+  "event_type": "auth.registration_otp",
+  "timestamp": "2026-08-22T15:20:00Z",
+  "producer": "store_auth",
+  "data": {
+    "email": "customer@example.com",
+    "code": "849201",
+    "name": "Jane Doe",
+    "type": "REGISTRATION"
+  }
+}
+```
