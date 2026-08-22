@@ -28,6 +28,9 @@ type Config struct {
 	OTPProvider            string
 	KafkaBrokers           string
 	KafkaTopicAuthEvents   string
+	KafkaTopicUserEvents   string
+	KafkaConsumerGroupAuth string
+	EnableUserEventsConsumer bool
 }
 
 // Load reads environment variables from a .env file (if present) and process environment,
@@ -37,22 +40,25 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		ServerPort:             getEnv("SERVER_PORT", "8080"),
-		Env:                    getEnv("ENV", "development"),
-		DatabaseURL:            os.Getenv("DATABASE_URL"),
-		RedisURL:               getEnv("REDIS_URL", "redis://localhost:6379"),
-		RedisPassword:          os.Getenv("REDIS_PASSWORD"),
-		RateLimitMaxRequests:  getEnvAsInt("RATE_LIMIT_MAX_REQUESTS", 10),
-		JWTPrivateKeyPath:      getEnv("JWT_PRIVATE_KEY_PATH", "./keys/private.pem"),
-		JWTPublicKeyPath:       getEnv("JWT_PUBLIC_KEY_PATH", "./keys/public.pem"),
-		JWTAccessExpiryMinutes: getEnvAsInt("JWT_ACCESS_EXPIRY_MINUTES", 15),
-		JWTRefreshExpiryDays:   getEnvAsInt("JWT_REFRESH_EXPIRY_DAYS", 7),
-		BcryptCost:             getEnvAsInt("BCRYPT_COST", 12),
-		OTPExpiryMinutes:       getEnvAsInt("OTP_EXPIRY_MINUTES", 5),
-		OTPMaxAttempts:         getEnvAsInt("OTP_MAX_ATTEMPTS", 5),
-		OTPProvider:            getEnv("OTP_PROVIDER", "kafka"),
-		KafkaBrokers:           getEnv("KAFKA_BROKERS", "localhost:9092"),
-		KafkaTopicAuthEvents:   getEnv("KAFKA_TOPIC_AUTH_EVENTS", "auth.events"),
+		ServerPort:               getEnv("SERVER_PORT", "8080"),
+		Env:                      getEnv("ENV", "development"),
+		DatabaseURL:              os.Getenv("DATABASE_URL"),
+		RedisURL:                 getEnv("REDIS_URL", "redis://localhost:6379"),
+		RedisPassword:            os.Getenv("REDIS_PASSWORD"),
+		RateLimitMaxRequests:    getEnvAsInt("RATE_LIMIT_MAX_REQUESTS", 10),
+		JWTPrivateKeyPath:        getEnv("JWT_PRIVATE_KEY_PATH", "./keys/private.pem"),
+		JWTPublicKeyPath:         getEnv("JWT_PUBLIC_KEY_PATH", "./keys/public.pem"),
+		JWTAccessExpiryMinutes:   getEnvAsInt("JWT_ACCESS_EXPIRY_MINUTES", 15),
+		JWTRefreshExpiryDays:     getEnvAsInt("JWT_REFRESH_EXPIRY_DAYS", 7),
+		BcryptCost:               getEnvAsInt("BCRYPT_COST", 12),
+		OTPExpiryMinutes:         getEnvAsInt("OTP_EXPIRY_MINUTES", 5),
+		OTPMaxAttempts:           getEnvAsInt("OTP_MAX_ATTEMPTS", 5),
+		OTPProvider:              getEnv("OTP_PROVIDER", "kafka"),
+		KafkaBrokers:             getEnv("KAFKA_BROKERS", "localhost:9092"),
+		KafkaTopicAuthEvents:     getEnv("KAFKA_TOPIC_AUTH_EVENTS", "auth.events"),
+		KafkaTopicUserEvents:     getEnv("KAFKA_TOPIC_USER_EVENTS", "user.events"),
+		KafkaConsumerGroupAuth:   getEnv("KAFKA_CONSUMER_GROUP_AUTH", "store-auth-user-events-group"),
+		EnableUserEventsConsumer: getEnvAsBool("ENABLE_USER_EVENTS_CONSUMER", true),
 	}
 
 	windowSec := getEnvAsInt("RATE_LIMIT_WINDOW_SECONDS", 1)
@@ -85,6 +91,18 @@ func getEnvAsInt(key string, fallback int) int {
 		return fallback
 	}
 	val, err := strconv.Atoi(valStr)
+	if err != nil {
+		return fallback
+	}
+	return val
+}
+
+func getEnvAsBool(key string, fallback bool) bool {
+	valStr := os.Getenv(key)
+	if valStr == "" {
+		return fallback
+	}
+	val, err := strconv.ParseBool(valStr)
 	if err != nil {
 		return fallback
 	}

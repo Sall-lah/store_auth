@@ -8,9 +8,9 @@ This guide details how downstream feature services (e.g. `order-service`, `produ
 
 `store_auth` uses **RS256 Asymmetric Cryptography** (RSA Signature with SHA-256) and standard RFC 7517 JWKS discovery. In production architectures, services are fronted by an **API Gateway**.
 
-### Pattern A: Production API Gateway Offloading (Recommended)
+### Pattern A: Production API Gateway Offloading via Subrequest (Recommended)
 
-In this pattern, the API Gateway serves as the single public entrypoint, terminates TLS, handles CORS, validates JWTs using `store_auth`'s JWKS, and forwards trusted identity headers downstream.
+In this pattern, the API Gateway serves as the single public entrypoint, terminates TLS, handles CORS, strips client `X-User-*` headers, and offloads authentication verification to `store_auth` via internal subrequests (`auth_request /_auth_verify` -> `/api/auth/me`). `store_auth` validates the RS256 token and Redis blacklist status, returning `X-User-*` headers for the Gateway to forward downstream.
 
 ```
                               PUBLIC INTERNET (HTTPS)
@@ -23,33 +23,31 @@ In this pattern, the API Gateway serves as the single public entrypoint, termina
                      ├────────────────────────────────────────┤
                      │ 1. Terminates TLS / Handles CORS       │
                      │ 2. Strips external 'X-User-*' headers  │  <-- Anti-Spoofing
-                     │ 3. Validates JWT Signature via JWKS    │
+                     │ 3. Subrequest: auth_request to         │
+                     │    store_auth /api/auth/me             │
                      │ 4. Injects verified identity headers:  │
                      │    • X-User-Id: 9b1deb4d-...           │
                      │    • X-User-Role: CUSTOMER             │
                      │    • X-User-Email: user@example.com    │
-                     └───────────────────┬────────────────────┘
-                                         │
-                                PRIVATE VPC NETWORK
-                     ┌───────────────────┴────────────────────┐
-                     │                                        │
-        /api/auth/*  │                           /api/orders/*│
-                     ▼                                        ▼
-      ┌─────────────────────────────┐          ┌─────────────────────────────┐
-      │         store_auth          │          │        order-service        │
-      │         (Port 8080)         │          │         (Port 8081)         │
-      ├─────────────────────────────┤          ├─────────────────────────────┤
-      │ • Signs tokens (PrivKey)    │          │ Read headers directly:      │
-      │ • Exposes JWKS (PubKey)     │          │   r.Header.Get("X-User-Id") │
-      │ • Login, OTP, Reset Flows   │          │ Zero JWT crypto overhead!   │
-      └─────────────────────────────┘          └─────────────────────────────┘
+                     └───────┬────────────────────────┬───────┘
+                             │ (Internal Subrequest)  │ (Proxies enriched request)
+                             ▼                        ▼
+              ┌─────────────────────────────┐  ┌─────────────────────────────┐
+              │         store_auth          │  │        order-service        │
+              │         (Port 8080)         │  │         (Port 8081)         │
+              ├─────────────────────────────┤  ├─────────────────────────────┤
+              │ • Signs tokens (PrivKey)    │  │ Read headers directly:      │
+              │ • Exposes JWKS (PubKey)     │  │   r.Header.Get("X-User-Id") │
+              │ • Validates token & Redis   │  │ Zero JWT crypto overhead!   │
+              │   blacklist on /api/auth/me │  │                             │
+              └─────────────────────────────┘  └─────────────────────────────┘
 ```
 
 ---
 
 ### Pattern B: Perimeter Reverse Proxy with Downstream JWKS Validation (Zero-Trust)
 
-If your internal microservice network requires zero-trust end-to-end token verification, the Gateway simply proxies the `Authorization: Bearer <token>` header, and feature services verify the RS256 signature locally in memory.
+If your internal microservice network requires zero-trust end-to-end token verification, the Gateway simply proxies the `Authorization: Bearer <token>` header, and feature services fetch `store_auth`'s public keys via `/.well-known/jwks.json` to verify the RS256 signature locally in memory.
 
 ```
                      ┌────────────────────────────────────────┐
@@ -159,6 +157,25 @@ http {
         proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
 
         # ----------------------------------------------------------------------
+        # Internal Auth Subrequest Verification (Offloading to store_auth)
+        # ----------------------------------------------------------------------
+        location = /_auth_verify {
+            internal;
+            if ($request_method = OPTIONS) {
+                return 200;
+            }
+
+            set $auth_backend "https://store-auth.herokuapp.com";
+            proxy_pass $auth_backend/api/auth/me;
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header X-Original-URI $request_uri;
+            proxy_set_header X-Original-Method $request_method;
+            proxy_set_header Authorization $http_authorization;
+            proxy_set_header Cookie $http_cookie;
+        }
+
+        # ----------------------------------------------------------------------
         # 1. Auth Service Routes & JWKS
         # ----------------------------------------------------------------------
         location /api/auth/ {
@@ -166,9 +183,9 @@ http {
             proxy_pass $auth_backend;
         }
 
-        location /.well-known/ {
+        location = /.well-known/jwks.json {
             set $auth_backend "https://store-auth.herokuapp.com";
-            proxy_pass $auth_backend;
+            proxy_pass $auth_backend/.well-known/jwks.json;
         }
 
         location /docs {
@@ -177,9 +194,22 @@ http {
         }
 
         # ----------------------------------------------------------------------
-        # 2. Feature Services Routes (Orders, Products, Cart)
+        # 2. Feature Services Routes (e.g. Orders - Protected via Auth Subrequest)
         # ----------------------------------------------------------------------
         location /api/orders/ {
+            # 1. Offload verification to store_auth /api/auth/me
+            auth_request /_auth_verify;
+
+            # 2. Extract verified claims from store_auth response headers
+            auth_request_set $auth_user_id $upstream_http_x_user_id;
+            auth_request_set $auth_user_role $upstream_http_x_user_role;
+            auth_request_set $auth_user_email $upstream_http_x_user_email;
+
+            # 3. Inject verified identity headers into downstream proxy request
+            proxy_set_header X-User-Id $auth_user_id;
+            proxy_set_header X-User-Role $auth_user_role;
+            proxy_set_header X-User-Email $auth_user_email;
+
             set $orders_backend "https://store-orders.herokuapp.com";
             proxy_pass $orders_backend;
         }
@@ -424,14 +454,14 @@ func (v *AuthValidator) AuthenticateMiddleware(next http.Handler) http.Handler {
 ## 6. Instant Revocation (Redis Blacklist)
 
 When an admin suspends a user or when a logout/password-reset occurs, `store_auth` publishes a blacklist entry into Redis:
-- **Redis Key**: `blacklist:user:{userId}`
+- **Redis Key**: `revoked:user:{userId}`
 - **TTL**: Matching maximum remaining JWT lifespan (15 minutes).
 
-In **Pattern A (Gateway Offloading)**, only the API Gateway checks Redis. Downstream services do not need to query Redis.
+In **Pattern A (Gateway Subrequest Offloading)**, `store_auth` automatically evaluates the Redis blacklist during the internal `/api/auth/me` subrequest. The API Gateway and downstream services do not need direct Redis access.
 
 If using **Pattern B (Zero-Trust)** and your service requires real-time sub-second revocation enforcement:
 ```go
-if rdb.Exists(ctx, "blacklist:user:"+claims.Subject).Val() > 0 {
+if rdb.Exists(ctx, "revoked:user:"+claims.Subject).Val() > 0 {
     http.Error(w, `{"error":"Account revoked"}`, http.StatusUnauthorized)
     return
 }

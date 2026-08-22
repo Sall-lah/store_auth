@@ -138,6 +138,42 @@ func (r *Repository) ActivateUser(ctx context.Context, id string) error {
 	return nil
 }
 
+// DeactivateUser sets is_active to false when a user is banned or suspended.
+// Why: Enforces account deactivation in PostgreSQL so subsequent login and refresh attempts are rejected with 403 Forbidden.
+func (r *Repository) DeactivateUser(ctx context.Context, id string) error {
+	_, err := r.client.User.FindUnique(
+		db.User.ID.Equals(id),
+	).Update(
+		db.User.IsActive.Set(false),
+	).Exec(ctx)
+
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("failed to deactivate user: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteUser removes a user record by primary key ID (cascading to OTP codes and refresh tokens).
+// Why: Implements full account deletion compliance, freeing the unique email address and removing credentials.
+func (r *Repository) DeleteUser(ctx context.Context, id string) error {
+	_, err := r.client.User.FindUnique(
+		db.User.ID.Equals(id),
+	).Delete().Exec(ctx)
+
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("failed to delete user: %w", err)
+	}
+
+	return nil
+}
+
 func mapPrismaUserToModel(u *db.UserModel) *User {
 	return &User{
 		ID:        u.ID,

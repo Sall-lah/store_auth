@@ -49,8 +49,10 @@ store_auth/
 │   ├── middleware/                   # Rate limiting, JWT authentication, body limit middleware
 │   ├── otp/                          # One-Time Password service, repository, and email sender
 │   ├── platform/
+│   │   ├── kafka/                    # Pure-Go Kafka producer & consumer group reader
 │   │   └── redis/                    # Redis client initialization & helper functions
-│   └── router/                       # Chi router topology & route definitions
+│   ├── router/                       # Chi router topology & route definitions
+│   └── user/                         # User lifecycle Kafka consumer (banned, deleted events)
 ├── prisma/
 │   └── schema.prisma                 # Prisma database schema definition
 ├── scripts/
@@ -93,6 +95,9 @@ cp .env.example .env
 | `OTP_MAX_ATTEMPTS` | Maximum allowed invalid OTP submission attempts | `5` | No |
 | `KAFKA_BROKERS` | Comma-separated Kafka broker addresses | `localhost:9092` | No |
 | `KAFKA_TOPIC_AUTH_EVENTS` | Kafka topic for auth lifecycle domain events | `auth.events` | No |
+| `KAFKA_TOPIC_USER_EVENTS` | Kafka topic for incoming user lifecycle events | `user.events` | No |
+| `KAFKA_CONSUMER_GROUP_AUTH` | Kafka consumer group ID for user events | `store-auth-user-events-group` | No |
+| `ENABLE_USER_EVENTS_CONSUMER` | Enable background Kafka user lifecycle consumer | `true` | No |
 
 ---
 

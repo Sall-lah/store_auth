@@ -45,6 +45,15 @@ func TestConfig(t *testing.T) {
 		if cfg.KafkaTopicAuthEvents != "auth.events" {
 			t.Errorf("expected default KafkaTopicAuthEvents 'auth.events'; got %s", cfg.KafkaTopicAuthEvents)
 		}
+		if cfg.KafkaTopicUserEvents != "user.events" {
+			t.Errorf("expected default KafkaTopicUserEvents 'user.events'; got %s", cfg.KafkaTopicUserEvents)
+		}
+		if cfg.KafkaConsumerGroupAuth != "store-auth-user-events-group" {
+			t.Errorf("expected default KafkaConsumerGroupAuth 'store-auth-user-events-group'; got %s", cfg.KafkaConsumerGroupAuth)
+		}
+		if !cfg.EnableUserEventsConsumer {
+			t.Errorf("expected default EnableUserEventsConsumer true; got %v", cfg.EnableUserEventsConsumer)
+		}
 		if cfg.OTPProvider != "kafka" {
 			t.Errorf("expected default OTPProvider 'kafka'; got %s", cfg.OTPProvider)
 		}
@@ -55,11 +64,17 @@ func TestConfig(t *testing.T) {
 		_ = os.Setenv("REDIS_PASSWORD", "custom_redis_pass")
 		_ = os.Setenv("KAFKA_BROKERS", "broker1:9092,broker2:9092")
 		_ = os.Setenv("KAFKA_TOPIC_AUTH_EVENTS", "custom.auth.events")
+		_ = os.Setenv("KAFKA_TOPIC_USER_EVENTS", "custom.user.events")
+		_ = os.Setenv("KAFKA_CONSUMER_GROUP_AUTH", "custom-auth-group")
+		_ = os.Setenv("ENABLE_USER_EVENTS_CONSUMER", "false")
 		_ = os.Setenv("OTP_PROVIDER", "mock")
 		defer os.Unsetenv("DATABASE_URL")
 		defer os.Unsetenv("REDIS_PASSWORD")
 		defer os.Unsetenv("KAFKA_BROKERS")
 		defer os.Unsetenv("KAFKA_TOPIC_AUTH_EVENTS")
+		defer os.Unsetenv("KAFKA_TOPIC_USER_EVENTS")
+		defer os.Unsetenv("KAFKA_CONSUMER_GROUP_AUTH")
+		defer os.Unsetenv("ENABLE_USER_EVENTS_CONSUMER")
 		defer os.Unsetenv("OTP_PROVIDER")
 
 		cfg, err := Load()
@@ -75,6 +90,15 @@ func TestConfig(t *testing.T) {
 		}
 		if cfg.KafkaTopicAuthEvents != "custom.auth.events" {
 			t.Errorf("expected KafkaTopicAuthEvents 'custom.auth.events'; got %s", cfg.KafkaTopicAuthEvents)
+		}
+		if cfg.KafkaTopicUserEvents != "custom.user.events" {
+			t.Errorf("expected KafkaTopicUserEvents 'custom.user.events'; got %s", cfg.KafkaTopicUserEvents)
+		}
+		if cfg.KafkaConsumerGroupAuth != "custom-auth-group" {
+			t.Errorf("expected KafkaConsumerGroupAuth 'custom-auth-group'; got %s", cfg.KafkaConsumerGroupAuth)
+		}
+		if cfg.EnableUserEventsConsumer {
+			t.Errorf("expected EnableUserEventsConsumer false; got %v", cfg.EnableUserEventsConsumer)
 		}
 		if cfg.OTPProvider != "mock" {
 			t.Errorf("expected OTPProvider 'mock'; got %s", cfg.OTPProvider)

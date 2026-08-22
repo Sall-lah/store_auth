@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"store_auth/internal/platform/kafka"
 	"store_auth/internal/platform/redis"
 	"store_auth/internal/router"
+	"store_auth/internal/user"
 	"store_auth/prisma/db"
 )
 
@@ -79,6 +81,29 @@ func main() {
 	otpSvc := otp.NewService(otpRepo, otpSender, cfg.OTPExpiryMinutes, cfg.OTPMaxAttempts)
 	authSvc := auth.NewService(userRepo, refreshRepo, otpSvc, jwtSvc, rdb, cfg.BcryptCost, cfg.JWTRefreshExpiryDays)
 
+	// Initialize and run Kafka user lifecycle consumer in background
+	var userEventsConsumer *user.Consumer
+	consumerCtx, cancelConsumer := context.WithCancel(context.Background())
+	defer cancelConsumer()
+	var consumerWg sync.WaitGroup
+
+	if cfg.EnableUserEventsConsumer && cfg.KafkaBrokers != "" {
+		brokers := strings.Split(cfg.KafkaBrokers, ",")
+		for i := range brokers {
+			brokers[i] = strings.TrimSpace(brokers[i])
+		}
+		kafkaReader := kafka.NewConsumer(brokers, cfg.KafkaTopicUserEvents, cfg.KafkaConsumerGroupAuth)
+		userEventsConsumer = user.NewConsumer(kafkaReader, userRepo, refreshRepo, rdb)
+
+		consumerWg.Add(1)
+		go func() {
+			defer consumerWg.Done()
+			userEventsConsumer.Start(consumerCtx)
+		}()
+		log.Printf("[SERVER SETUP] Started Kafka user lifecycle consumer on topic '%s' (group: '%s')",
+			cfg.KafkaTopicUserEvents, cfg.KafkaConsumerGroupAuth)
+	}
+
 	// Initialize handlers per feature
 	isProd := cfg.Env == "production"
 	authHandler := auth.NewHandler(authSvc, isProd)
@@ -115,6 +140,14 @@ func main() {
 		log.Printf("[SHUTDOWN] Received signal %v. Initiating graceful shutdown...", sig)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
+		cancelConsumer()
+		if userEventsConsumer != nil {
+			if err := userEventsConsumer.Close(); err != nil {
+				log.Printf("[WARNING] Error closing Kafka user consumer: %v", err)
+			}
+		}
+		consumerWg.Wait()
 
 		if err := srv.Shutdown(ctx); err != nil {
 			log.Printf("[WARNING] Server forced to shutdown: %v", err)
