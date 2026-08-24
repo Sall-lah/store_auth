@@ -523,7 +523,12 @@ Published by the `user` service when a customer deletes their account or an admi
 
 ---
 
-### 8.2 Outbound Events Published by `store_auth`
+### 8.2 Outbound Events Published by `store_auth` (Transactional OTPs)
+
+`store_auth` uses Apache Kafka to dispatch transactional one-time passwords (OTP) to `store_notification`.
+
+> [!NOTE]
+> `store_notification` is used **exclusively for transactional OTP code delivery** (email/SMS). It is stateless and does not store user notification history or in-app feeds. (In-app notification feeds and UI inboxes are managed independently within `store_user`).
 
 * **Topic**: `auth.events` (Configurable via `KAFKA_TOPIC_AUTH_EVENTS`)
 * **Consumer**: `store_notification`

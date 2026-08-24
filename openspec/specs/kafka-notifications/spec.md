@@ -1,12 +1,10 @@
 # kafka-notifications Specification
 
 ## Purpose
-TBD - Direct publishing of authentication domain lifecycle events (registration OTP, password reset OTP) to Apache Kafka topic `auth.events`.
-
+Direct publishing of transactional authentication domain lifecycle events (registration OTP, password reset OTP) to Apache Kafka topic `auth.events` for `store_notification`.
 ## Requirements
-
 ### Requirement: Service publishes authentication domain events to Kafka
-The system SHALL publish structured JSON domain events to the configured Apache Kafka topic (`auth.events`) whenever authentication lifecycle events requiring customer notification occur. Each event SHALL be wrapped in a standard `EventEnvelope` containing `event_id` (UUID), `event_type`, `timestamp` (ISO8601), `producer` ("store_auth"), and `data` (JSON object).
+The system SHALL publish structured JSON domain events to the configured Apache Kafka topic (`auth.events`) exclusively for transactional authentication lifecycle events requiring customer OTP notification (registration and password reset). The system SHALL NOT expect or require the notification service to persist in-app notification state or participate in user lifecycle deactivation. Each event SHALL be wrapped in a standard `EventEnvelope` containing `event_id` (UUID), `event_type`, `timestamp` (ISO8601), `producer` ("store_auth"), and `data` (JSON object).
 
 #### Scenario: Successful Kafka event publication
 - **WHEN** an OTP delivery event occurs and Kafka broker is reachable
@@ -28,3 +26,4 @@ The system SHALL emit event payloads conforming to the `AuthOtpEventData` schema
 #### Scenario: Emitting password reset OTP event
 - **WHEN** an existing user requests a password reset
 - **THEN** the system emits an envelope with `event_type: "auth.password_reset_otp"` and data payload containing the 6-digit code, destination email, user display name, and `type: "PASSWORD_RESET"`
+
