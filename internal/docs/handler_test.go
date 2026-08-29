@@ -26,6 +26,9 @@ func TestDocsHandler(t *testing.T) {
 		if !strings.Contains(body, "SwaggerUIBundle") {
 			t.Fatalf("expected body to contain SwaggerUIBundle initialization")
 		}
+		if !strings.Contains(body, "specUrl") || !strings.Contains(body, "./openapi.yaml") {
+			t.Fatalf("expected body to contain dynamic relative spec URL resolution logic")
+		}
 	})
 
 	t.Run("ServeSpecYAML returns valid OpenAPI 3.1 YAML", func(t *testing.T) {

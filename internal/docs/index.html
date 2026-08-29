@@ -30,8 +30,14 @@
   <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui-standalone-preset.js" charset="UTF-8"></script>
   <script>
     window.onload = function() {
+      var isTrailingSlash = window.location.pathname.endsWith('/');
+      var isSwagger = window.location.pathname.includes('/swagger');
+      var specUrl = isTrailingSlash
+        ? (isSwagger ? '../docs/openapi.yaml' : './openapi.yaml')
+        : './docs/openapi.yaml';
+
       window.ui = SwaggerUIBundle({
-        url: "/docs/openapi.yaml",
+        url: specUrl,
         dom_id: '#swagger-ui',
         deepLinking: true,
         presets: [
